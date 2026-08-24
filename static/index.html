@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iPad Trackpad</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Trackpad">
+<meta name="theme-color" content="#0a0a0d">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="statusbar">
+      <div id="conn">
+        <span id="conn-dot" class="dot"></span>
+        <span id="conn-text">Connecting…</span>
+      </div>
+      <nav id="tabs">
+        <button class="tab-btn active" data-tab="trackpad">Trackpad</button>
+        <button class="tab-btn" data-tab="keyboard">Keyboard</button>
+      </nav>
+    </header>
+
+    <main id="panels">
+      <section id="panel-trackpad" class="panel active">
+        <div id="trackpad" aria-label="Trackpad surface"></div>
+        <div id="tp-hint">1 finger: move · tap: click · hold+drag: drag<br>
+          2 fingers: scroll · tap: right-click · pinch: zoom<br>
+          3/4 fingers: swipe (spaces / mission control)</div>
+      </section>
+
+      <section id="panel-keyboard" class="panel">
+        <div id="keyboard"></div>
+        <div id="typebar">
+          <input id="typefield" type="text" inputmode="text" autocomplete="off" autocapitalize="off"
+                 autocorrect="off" spellcheck="false" placeholder="Type here to send literal text…">
+          <button id="typeclear" type="button">Clear</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

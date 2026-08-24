@@ -1,0 +1,248 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0d;
+  --surface: #16161c;
+  --surface-2: #1f1f28;
+  --border: #2a2a35;
+  --text: #e8e8ee;
+  --text-dim: #83839a;
+  --accent: #4c8dff;
+  --accent-dim: #274266;
+  --good: #35d07f;
+  --bad: #ff5f5f;
+  --key-active: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#app {
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* -- status bar -- */
+
+#statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+
+#conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bad);
+  flex: 0 0 auto;
+  box-shadow: 0 0 6px currentColor;
+  transition: background-color 0.2s ease;
+}
+.dot.connected { background: var(--good); color: var(--good); }
+.dot.connecting { background: #d9a441; color: #d9a441; }
+
+#tabs {
+  display: flex;
+  gap: 6px;
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 3px;
+}
+
+.tab-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 8px;
+  touch-action: manipulation;
+}
+
+.tab-btn.active {
+  background: var(--accent);
+  color: white;
+}
+
+/* -- panels -- */
+
+#panels {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.panel {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+}
+
+.panel.active { display: flex; }
+
+/* -- trackpad -- */
+
+#trackpad {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 12px;
+  border-radius: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  position: relative;
+}
+
+#trackpad.tapping::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+  background: rgba(76, 141, 255, 0.06);
+  pointer-events: none;
+}
+
+#tp-hint {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  padding: 4px 12px 10px;
+}
+
+/* -- keyboard -- */
+
+#panel-keyboard {
+  padding: 10px 10px 0;
+}
+
+#keyboard {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+
+.krow {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 6px;
+  min-height: 0;
+}
+
+.key {
+  flex: 1 1 0;
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 9px;
+  font-size: 16px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: background-color 0.08s ease, transform 0.08s ease;
+}
+
+.key:active, .key.pressed {
+  background: var(--surface-2);
+  transform: scale(0.96);
+}
+
+.key.mod {
+  background: var(--surface-2);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+.key.mod.active {
+  background: var(--key-active);
+  color: white;
+  box-shadow: 0 0 0 2px var(--accent-dim) inset;
+}
+
+.key.wide { flex: 1.6 1 0; }
+.key.xwide { flex: 2.4 1 0; }
+.key.small { font-size: 13px; color: var(--text-dim); }
+
+/* -- typebar -- */
+
+#typebar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 8px 2px 10px;
+}
+
+#typefield {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 16px;
+  padding: 10px 12px;
+}
+
+#typeclear {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-radius: 10px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+}

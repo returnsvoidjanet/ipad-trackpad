@@ -1,0 +1,11 @@
+{
+  "name": "iPad Trackpad",
+  "short_name": "Trackpad",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0d",
+  "theme_color": "#0a0a0d",
+  "icons": []
+}

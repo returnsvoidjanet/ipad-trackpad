@@ -1,0 +1,8 @@
+# Hard dependency on every platform (this is what serves the PWA + WebSocket).
+aiohttp>=3.9
+
+# Only installs/works on macOS (pyobjc). Provides the `Quartz` module used
+# by QuartzInjector for real input injection. The environment marker means
+# `pip install -r requirements.txt` on Linux/CI simply skips this line, and
+# helper.py falls back to MockInjector automatically at runtime.
+pyobjc-framework-Quartz>=10.1; sys_platform == "darwin"
