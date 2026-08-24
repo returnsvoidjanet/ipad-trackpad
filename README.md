@@ -1,4 +1,4 @@
-# iPad Trackpad + Keyboard (v1)
+# iPad Trackpad + Keyboard (v1.1)
 
 Turns an iPad into a wireless trackpad + keyboard for a Mac. Architecture:
 a small Python server (`helper.py`) runs **on your Mac**, serves a PWA to
@@ -8,6 +8,11 @@ over a WebSocket. No cloud, no App Store, nothing leaves your LAN.
 
 v1 scope: trackpad + keyboard only. No macros, no notes, no lab-specific
 features.
+
+**v1.1**: latency pass (TCP_NODELAY + client-side move/scroll
+coalescing — see "Performance" below), plus a regression-guard pass on
+click button mapping and 3/4-finger swipe → keystroke mapping after a v1
+report that clicks felt swapped and swipes weren't registering.
 
 ## Setup (on the Mac)
 
@@ -80,6 +85,45 @@ it):
   injection. Raise for a faster cursor, lower for more precision.
 - `natural_scroll` — matches macOS's "natural" (content-follows-finger)
   scroll direction. Flip if scrolling feels backwards.
+- `debug_log_messages` — off by default. When `true`, logs every dispatched
+  WS message on the Mac side. Useful for debugging the protocol, but real
+  per-message overhead, so leave it off unless you're actively debugging.
+
+## Performance
+
+v1 feedback was "not fast enough" — here's what changed and why:
+
+- **TCP_NODELAY on the WebSocket.** Nagle's algorithm batches small
+  outbound TCP segments waiting for an ACK or a full segment before
+  sending. Move packets are tiny and frequent — exactly what Nagle delays
+  most — so `helper.py` disables it (`socket.TCP_NODELAY`) on every WS
+  connection's underlying socket and confirms (via `getsockopt`, logged)
+  that it actually stuck.
+- **Client-side move/scroll coalescing.** `touchmove` can fire faster than
+  the display refresh rate, so the PWA used to send one WS message per
+  event. It now accumulates the relative dx/dy across all touchmoves in a
+  frame and flushes ONE `move` (or `scroll`) message per
+  `requestAnimationFrame` tick — same visual responsiveness (~60–120Hz),
+  far fewer packets. No motion is dropped (every delta is summed in), and
+  a frame with nothing new never sends an empty message. Any move still
+  pending is flushed immediately on touch-end so lifting a finger doesn't
+  strand up to a frame's worth of motion.
+- **Tightened dispatch path.** `dispatch()` is fully synchronous (no
+  awaits/sleeps between a WS message arriving and the corresponding
+  Quartz event being posted), and per-message logging is now gated behind
+  `debug_log_messages` so it isn't a hot-path cost by default.
+- **Not changed, on purpose**: message shape (still plain JSON, same
+  keys) and keyboard keystrokes (still sent immediately, uncoalesced —
+  batching would make typing feel laggy). Compact/binary framing was
+  considered and skipped as unnecessary — NODELAY + coalescing were the
+  two actual wins.
+
+Real end-to-end feel (finger-to-cursor, on the actual Mac) can only be
+judged by hand on macOS — this pass fixes the two biggest *transport*
+culprits and is proven at that layer (see "What's tested vs. not"). If it
+still doesn't feel fast enough after this, the next lever is a
+lower-latency transport (WebRTC/UDP data channel instead of WS-over-TCP)
+and/or a native iPad client instead of a Safari PWA.
 
 ## Gestures (trackpad tab)
 
@@ -99,6 +143,25 @@ it):
   bindings are stable regardless of the user's own trackpad gesture
   settings in System Settings — a synthesized gesture event would depend
   on the user having matching settings enabled.
+
+  **This depends on two things a code fix can't change:** (1) Mission
+  Control's keyboard shortcuts must be enabled in **System Settings →
+  Keyboard → Keyboard Shortcuts → Mission Control** on the Mac (Ctrl+←/→/
+  ↑/↓ specifically) — if they've been reassigned or turned off, the
+  keystroke goes out but nothing visible happens; (2) Ctrl+Left/Right
+  switching Spaces requires **more than one Space to exist** — with only
+  one Space it's a no-op by design.
+
+  **If a 3-finger swipe seems to do nothing at all** (not even a Space
+  switch that's a no-op), check whether iPadOS is intercepting it first:
+  Safari/WebKit has its own **system-level 3-finger text-editing gesture**
+  (undo/redo/copy) that can swallow 3-finger touches before they ever
+  reach this page's JS, independent of `touch-action` or
+  `preventDefault()` — that's an OS/WebKit gesture recognizer, not
+  something a web page can override. If swipes work with 4 fingers but
+  not 3, this is almost certainly why. (4-finger/5-finger gestures have
+  their own separate, always-reserved system meaning — App Switcher/Home —
+  and are never deliverable to a web page at all.)
 
 ## Keyboard tab
 
@@ -154,21 +217,38 @@ and named keys (`tab`, `space`, `return`/`enter`, `delete`/`backspace`,
 ## What's tested vs. not
 
 The web/transport layer (HTTP serving of the PWA, WebSocket handshake,
-JSON parsing, dispatch of every message type to the injector) is tested
-on Linux via `test_protocol.py` — it can't run on macOS-only hardware, so
-that file forces the code path through `MockInjector` and asserts the
-right mock action + args got called for one sample of every message
-type. Run it with:
+JSON parsing, dispatch of every message type to the injector, and — as of
+v1.1 — that `button:"left"`/`"right"` clicks and every 3/4-finger swipe
+direction resolve to the correct button/keystroke) is tested on Linux via
+`test_protocol.py`. It can't run on macOS-only hardware, so it forces the
+code path through `MockInjector` and asserts the right mock action + args
+got called for one sample of every message type. Run it with:
 
 ```sh
 pip install aiohttp
 python3 test_protocol.py
 ```
 
-**Real Quartz CGEvent injection (`QuartzInjector`) is untested by this
-repo** — it only runs on macOS and needs a real display/session, which
-isn't available in this dev environment. It's syntax-checked (imports are
-guarded so the module at least parses) but the actual mouse/keyboard
-injection needs to be verified by hand on a Mac: run `helper.py`, connect
-from the iPad, and confirm the cursor moves, clicks land, scrolling
-works, and (after granting Input Monitoring) keystrokes actually type.
+**`QuartzInjector`'s actual CGEvent selection is now also tested on
+Linux**, via `test_quartz_mapping.py`. `QuartzInjector` is normally
+unconstructable off macOS (its `__init__` requires `import Quartz` to
+have already succeeded), so this installs a fake `Quartz` module into
+`sys.modules` first, letting the real class construct and its real
+`click`/`mouse_down`/`mouse_up`/`move`/`swipe` code run — proving (not
+just reading) that left/right never swap at the CGEvent-type/
+CGMouseButton level, and that every swipe direction posts the correct
+keycode with the Control modifier flag set:
+
+```sh
+python3 test_quartz_mapping.py
+```
+
+**What's still genuinely untested by this repo**: the actual pixels/
+clicks/keystrokes landing in a running macOS session — that needs a real
+display and a real Mac, which isn't available in this dev environment.
+`QuartzInjector` is syntax-checked and its constant-selection logic is
+covered as above, but end-to-end behavior (does the cursor actually move,
+does the Space actually switch, does typing actually appear) needs to be
+verified by hand on a Mac: run `helper.py`, connect from the iPad, and
+confirm the cursor moves, clicks land, scrolling works, swipes switch
+Spaces, and (after granting Input Monitoring) keystrokes actually type.

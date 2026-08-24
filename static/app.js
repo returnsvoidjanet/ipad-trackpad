@@ -173,6 +173,53 @@ const Conn = (() => {
     if (momentumRaf) { cancelAnimationFrame(momentumRaf); momentumRaf = null; }
   }
 
+  // -- move/scroll coalescing --------------------------------------------
+  //
+  // touchmove can fire much faster than the display refresh rate (bursts
+  // of several events per frame are common, especially on ProMotion
+  // iPads). Sending one WS message per touchmove floods the socket with
+  // far more small packets than the cursor can visibly move between
+  // frames. Instead, accumulate the relative deltas from every touchmove
+  // in a frame and flush ONE message per requestAnimationFrame tick -
+  // this caps the send rate at the display's refresh rate (~60-120Hz)
+  // without losing any motion (every delta is still summed in, none are
+  // dropped) and without sending anything when there's nothing new to
+  // report.
+  function makeCoalescedSender(type, extra) {
+    let pendingDx = 0;
+    let pendingDy = 0;
+    let rafId = null;
+
+    function flush() {
+      rafId = null;
+      if (pendingDx === 0 && pendingDy === 0) return; // never send a zero-delta frame
+      const msg = { type, dx: pendingDx, dy: pendingDy };
+      if (extra) Object.assign(msg, extra);
+      Conn.send(msg);
+      pendingDx = 0;
+      pendingDy = 0;
+    }
+
+    return {
+      queue(dx, dy) {
+        pendingDx += dx;
+        pendingDy += dy;
+        if (rafId === null) rafId = requestAnimationFrame(flush);
+      },
+      // Send whatever is pending right now instead of waiting for the next
+      // frame, and cancel that frame's callback. Used when a gesture ends
+      // so the last bit of motion lands immediately instead of up to one
+      // frame late.
+      flushNow() {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+        flush();
+      },
+    };
+  }
+
+  const moveSender = makeCoalescedSender("move");
+  const scrollSender = makeCoalescedSender("scroll", { momentum: false });
+
   function startMomentum(vx, vy) {
     stopMomentum();
     // vx/vy in px/ms. Convert to a decaying per-frame scroll.
@@ -192,6 +239,12 @@ const Conn = (() => {
   el.addEventListener("touchstart", (e) => {
     e.preventDefault();
     stopMomentum();
+    // Defensive: a fresh gesture shouldn't inherit any coalesced-but-
+    // unsent delta from whatever came before (normally already flushed
+    // by onEnd, this just guards against edge cases like a missed
+    // touchend/touchcancel).
+    moveSender.flushNow();
+    scrollSender.flushNow();
     el.classList.add("tapping");
     const touches = Array.from(e.touches);
     session = newSession(touches);
@@ -226,7 +279,7 @@ const Conn = (() => {
         clearHoldTimer(s); // real movement cancels the "hold to drag" path's stillness requirement
         const mag = Math.hypot(dx, dy);
         const f = accel(mag);
-        Conn.send({ type: "move", dx: dx * f, dy: dy * f });
+        moveSender.queue(dx * f, dy * f);
       }
     } else if (touches.length === 2) {
       const curDist = distance(touches[0], touches[1]);
@@ -236,7 +289,7 @@ const Conn = (() => {
       if (Math.abs(distDelta) > translation * PINCH_DOMINANCE && s.pinchDist) {
         Conn.send({ type: "zoom", magnification: distDelta / s.pinchDist });
       } else {
-        Conn.send({ type: "scroll", dx, dy, momentum: false });
+        scrollSender.queue(dx, dy);
         // velocity sample for momentum on release
         s.momentum = { vx: dx / dt, vy: dy / dt };
       }
@@ -262,6 +315,12 @@ const Conn = (() => {
     if (!session) return;
     const s = session;
     const remaining = e.touches.length;
+
+    // Land any coalesced-but-not-yet-sent motion immediately instead of
+    // waiting for the next animation frame, so lifting a finger mid-move
+    // doesn't leave up to ~1 frame of motion stranded.
+    moveSender.flushNow();
+    scrollSender.flushNow();
 
     if (remaining === 0) {
       el.classList.remove("tapping");

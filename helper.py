@@ -48,6 +48,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "sensitivity": 1.6,
     # If true, flips scroll direction to match macOS "natural" scrolling.
     "natural_scroll": True,
+    # Off by default: logging every dispatched message adds real per-message
+    # overhead (string formatting + I/O) on the hot path between WS receive
+    # and injection. Flip on only when actively debugging latency/protocol
+    # issues.
+    "debug_log_messages": False,
 }
 
 
@@ -157,7 +162,17 @@ class MockInjector(Injector):
         self._record("zoom", magnification=magnification)
 
     def swipe(self, fingers: int, direction: str) -> None:
-        self._record("swipe", fingers=fingers, direction=direction)
+        # Also reports what QuartzInjector's swipe() would translate this
+        # into (via the shared SWIPE_KEY_MAP), so the swipe->keystroke
+        # mapping is assertable here on Linux/CI without real Quartz.
+        mapped = SWIPE_KEY_MAP.get(direction)
+        self._record(
+            "swipe",
+            fingers=fingers,
+            direction=direction,
+            mapped_key=mapped[0] if mapped else None,
+            mapped_modifiers=[mapped[1]] if mapped else [],
+        )
 
     def key(self, key: str, modifiers: list[str] | None, action: str = "press") -> None:
         # NB: kwarg is named press_action, not action - the log entry's
@@ -169,6 +184,20 @@ class MockInjector(Injector):
     def text(self, string: str) -> None:
         self._record("text", string=string)
 
+
+# 3/4-finger swipe direction -> (key, modifier) sent as a keyboard
+# shortcut. Single source of truth shared by QuartzInjector (which
+# actually injects it) and MockInjector (which just reports what would be
+# injected) so the mapping can be exercised - and a future edit to it
+# can't accidentally diverge between the two - without needing real
+# Quartz. See QuartzInjector.swipe() for why keyboard shortcuts are used
+# instead of a synthesized gesture event.
+SWIPE_KEY_MAP: dict[str, tuple[str, str]] = {
+    "left": ("leftarrow", "ctrl"),
+    "right": ("rightarrow", "ctrl"),
+    "up": ("uparrow", "ctrl"),
+    "down": ("downarrow", "ctrl"),
+}
 
 # Standard macOS ANSI-US virtual keycodes (Carbon HIToolbox table).
 # Letters/digits assume a US physical layout; this is a known v1
@@ -309,14 +338,11 @@ class QuartzInjector(Injector):
         # Ctrl+Down = App Exposé) rather than synthesizing a gesture
         # event, since those bindings are stable regardless of the
         # user's trackpad gesture settings. Used for both 3- and
-        # 4-finger swipes.
-        mapping = {
-            "left": ("leftarrow", "ctrl"),
-            "right": ("rightarrow", "ctrl"),
-            "up": ("uparrow", "ctrl"),
-            "down": ("downarrow", "ctrl"),
-        }
-        target = mapping.get(direction)
+        # 4-finger swipes. This requires Mission Control's keyboard
+        # shortcuts to be enabled in System Settings and more than one
+        # Space to exist (Ctrl+Left/Right is a no-op with only one Space)
+        # - see README.
+        target = SWIPE_KEY_MAP.get(direction)
         if target is None:
             logger.warning("unknown swipe direction: %r", direction)
             return
@@ -415,6 +441,35 @@ async def index_handler(request: web.Request) -> web.FileResponse:
     return web.FileResponse(STATIC_DIR / "index.html")
 
 
+def _enable_tcp_nodelay(request: web.Request, peer: str) -> None:
+    """Disable Nagle's algorithm on this connection's underlying TCP socket.
+
+    Nagle batches small outbound TCP segments to wait for either an ACK or
+    enough data to fill a full segment before sending. Move packets are
+    tiny (a few dozen bytes of JSON) and frequent, which is exactly the
+    pattern Nagle delays the most - on a LAN this alone can add tens of
+    milliseconds of jitter per packet, which is very noticeable for a
+    trackpad. TCP_NODELAY turns that batching off for this socket, so
+    every WS frame goes out on the wire immediately.
+    """
+    transport = request.transport
+    sock = transport.get_extra_info("socket") if transport is not None else None
+    if sock is None:
+        logger.warning("TCP_NODELAY: could not get raw socket for %s (transport=%r)", peer, transport)
+        return
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        logger.exception("TCP_NODELAY: setsockopt failed for %s", peer)
+        return
+    # Confirm it actually stuck, don't just assume setsockopt() worked.
+    try:
+        applied = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+    except OSError:
+        applied = None
+    logger.info("TCP_NODELAY enabled for %s (confirmed=%s)", peer, bool(applied))
+
+
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
@@ -423,7 +478,18 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
     peer = request.remote
     logger.info("client connected: %s", peer)
+    _enable_tcp_nodelay(request, peer)
 
+    debug = bool(cfg.get("debug_log_messages", False))
+
+    # Hot path: this loop drains the WS receive queue as fast as aiohttp
+    # can hand us frames. dispatch() is fully synchronous (no awaits, no
+    # sleeps, no locks) so nothing here yields the event loop between a
+    # message arriving and the corresponding input event being injected -
+    # the loop naturally keeps up with a high move-message rate because
+    # there is no per-message I/O or blocking work to fall behind on.
+    # Logging is gated behind `debug` because string-formatting + writing
+    # a log line on every single move is real, avoidable per-message cost.
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
             try:
@@ -431,6 +497,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             except json.JSONDecodeError:
                 logger.warning("bad JSON from client: %r", msg.data[:200])
                 continue
+            if debug:
+                logger.debug("dispatch: %r", data)
             try:
                 dispatch(injector, data, cfg)
             except Exception:

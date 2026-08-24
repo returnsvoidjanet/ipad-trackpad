@@ -3,11 +3,15 @@
 Linux/CI-testable check for the web/transport layer of helper.py.
 
 This does NOT and CANNOT test real Quartz input injection (that only
-exists on macOS). What it proves:
+exists on macOS) - see test_quartz_mapping.py for that, via a fake
+Quartz shim. What THIS file proves:
   - the aiohttp app serves the static PWA files over HTTP (200s)
   - a WebSocket client can connect to /ws
   - one sample message of every protocol type is received, parsed, and
     dispatched to the correct Injector method with the right args
+  - button:"left"/"right" clicks and every 3/4-finger swipe direction
+    dispatch with the correct button / resolve to the correct keystroke
+    (regression guard - see the assertions below)
 
 Run: python3 test_protocol.py
 """
@@ -56,6 +60,7 @@ async def main() -> None:
             {"type": "scroll", "dx": 0, "dy": 24, "momentum": False},
             {"type": "zoom", "magnification": 0.4},
             {"type": "swipe", "fingers": 3, "dir": "left"},
+            {"type": "swipe", "fingers": 4, "dir": "up"},
             {"type": "key", "key": "a", "modifiers": ["cmd"], "action": "press"},
             {"type": "text", "string": "hi"},
         ]
@@ -74,7 +79,7 @@ async def main() -> None:
 
     expected_actions = [
         "move", "click", "click", "mouse_down", "move", "mouse_up",
-        "scroll", "zoom", "swipe", "key", "text",
+        "scroll", "zoom", "swipe", "swipe", "key", "text",
     ]
     got_actions = [e["action"] for e in injector.log]
     assert got_actions == expected_actions, f"\n  got:      {got_actions}\n  expected: {expected_actions}"
@@ -91,6 +96,38 @@ async def main() -> None:
     expected_dy = -24 if cfg["natural_scroll"] else 24
     assert scroll_entry["dy"] == expected_dy, scroll_entry
 
+    # -- Regression guard: left/right must never swap (bug found in v1
+    # where a report claimed all left clicks registered as right clicks;
+    # traced end-to-end and found no swap in this code, but pinning it
+    # here with an explicit assertion so it can't silently regress). --
+    click_entries = [e for e in injector.log if e["action"] == "click"]
+    assert click_entries[0]["button"] == "left", (
+        f"button:'left' click must dispatch a LEFT-button action, got {click_entries[0]}"
+    )
+    assert click_entries[1]["button"] == "right", (
+        f"button:'right' click must dispatch a RIGHT-button action, got {click_entries[1]}"
+    )
+
+    down_entry = next(e for e in injector.log if e["action"] == "mouse_down")
+    assert down_entry["button"] == "left", down_entry
+    up_entry = next(e for e in injector.log if e["action"] == "mouse_up")
+    assert up_entry["button"] == "left", up_entry
+
+    # -- Regression guard: 3/4-finger swipe must resolve to the correct
+    # Ctrl+Arrow keystroke (Mission Control shortcuts). MockInjector
+    # reports what QuartzInjector's swipe() would inject via the shared
+    # SWIPE_KEY_MAP, so this is checkable without real Quartz/macOS. --
+    swipe_entries = [e for e in injector.log if e["action"] == "swipe"]
+    swipe_left = next(e for e in swipe_entries if e["direction"] == "left")
+    assert swipe_left["fingers"] == 3, swipe_left
+    assert swipe_left["mapped_key"] == "leftarrow", swipe_left
+    assert swipe_left["mapped_modifiers"] == ["ctrl"], swipe_left
+
+    swipe_up = next(e for e in swipe_entries if e["direction"] == "up")
+    assert swipe_up["fingers"] == 4, swipe_up
+    assert swipe_up["mapped_key"] == "uparrow", swipe_up
+    assert swipe_up["mapped_modifiers"] == ["ctrl"], swipe_up
+
     key_entry = next(e for e in injector.log if e["action"] == "key")
     assert key_entry["key"] == "a" and key_entry["modifiers"] == ["cmd"], key_entry
     assert key_entry["press_action"] == "press", key_entry
@@ -99,10 +136,11 @@ async def main() -> None:
     assert text_entry["string"] == "hi", text_entry
 
     print("\nALL CHECKS PASSED")
-    print("\nNOTE: this only proves the HTTP/WebSocket/dispatch layer.")
-    print("Real Quartz CGEvent injection is macOS-only and UNTESTED here")
-    print("(QuartzInjector never runs on this Linux host - only imported")
-    print("behind a guarded `import Quartz`, so it never even loads).")
+    print("\nNOTE: this only proves the HTTP/WebSocket/dispatch layer + the")
+    print("button/keystroke mapping as reported by MockInjector. It does NOT")
+    print("prove real Quartz CGEvent injection (macOS-only) - run")
+    print("test_quartz_mapping.py for that (via a fake Quartz shim), and")
+    print("verify actual on-screen behavior by hand on a Mac for the rest.")
 
 
 if __name__ == "__main__":
